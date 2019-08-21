@@ -4,6 +4,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -13,6 +17,7 @@ import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.schema.IndexDefinition;
+import org.neo4j.helpers.collection.Iterators;
 import org.neo4j.helpers.collection.MapUtil;
 import org.neo4j.helpers.collection.PagingIterator;
 import org.neo4j.logging.Log;
@@ -27,6 +32,7 @@ public abstract class BaseProcedure {
   static final String indexName = Constants.IndexName.getValue();
 
   static final int PAGE_SIZE = 10_000;
+  static final String PAGE_SIZE_STRING = "10000";
 
   @Context
   public GraphDatabaseService db;
@@ -81,39 +87,35 @@ public abstract class BaseProcedure {
 
   // todo: requires great explanation
   // todo: requires refactor (speed up)
-  void executeBatches(final Stream<Node> nodes, final int batchSize, Consumer<? super Node> nodeAction) throws InterruptedException {
+  void executeBatches(final Stream<Node> nodes, final int batchSize, final int parallelism, Consumer<? super Node> nodeAction) throws InterruptedException {
+
+    log.info("starting batch processing with batchsize of %d and a parallelism of %d", batchSize, parallelism);
+    long now = System.currentTimeMillis();
+    ExecutorService executorService = Executors.newWorkStealingPool(parallelism);
+
     Iterator<Node> nodeIterator = nodes.iterator();
     final PagingIterator<Node> pagingIterator = new PagingIterator<>(nodeIterator, batchSize);
+    final AtomicInteger numberOfBatches = new AtomicInteger();
+    while (pagingIterator.hasNext()) {
+      Iterator<Node> page = pagingIterator.nextPage();
 
-    Thread t = new Thread(() -> {  // we do explicit tx management so we require a separate thread
+      final List<Node> materializedNodesForBatch = Iterators.asList(page);
 
-      Transaction tx = db.beginTx();  // tx needs to opened here - we need one upon consuming the iterator
-      try {
-
-        int numberOfBatches = 0;
-        while (pagingIterator.hasNext()) {
-          Iterator<Node> page = pagingIterator.nextPage();
-
+      executorService.execute(() -> {
+        try (Transaction tx = db.beginTx()) {
+          int batchNumber = numberOfBatches.getAndIncrement();
+          log.info("starting batch # %d", batchNumber);
+//          materializedNodesForBatch.forEach(node -> {}); // for checking baseline
+          materializedNodesForBatch.forEach(nodeAction);
           tx.success();
-          tx.close();
-          tx = db.beginTx();
-
-          page.forEachRemaining(nodeAction);
-          numberOfBatches++;
-          log.info("batch # %d", numberOfBatches);
+          log.info("done batch # %d", batchNumber);
         }
-        log.info("done, ran %d batches successfully", numberOfBatches);
+      });
+    }
 
-
-      } finally {
-        if (tx!=null) {
-          tx.success();
-          tx.close();
-        }
-      }
-
-    });
-    t.start();
-    t.join();
+    executorService.shutdown();
+    boolean hasTerminatedInTime = executorService.awaitTermination(10, TimeUnit.MINUTES);
+    log.info("done with processing %d batches in %f secs, termination %s", numberOfBatches.get(), (System.currentTimeMillis()-now)/1000.0,hasTerminatedInTime);
   }
+
 }

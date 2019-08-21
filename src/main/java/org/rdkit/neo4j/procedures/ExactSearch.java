@@ -36,10 +36,13 @@ public class ExactSearch extends BaseProcedure {
 
   @Procedure(name = "org.rdkit.update", mode = Mode.WRITE)
   @Description("RDKit update procedure, allows to construct ['formula', 'molecular_weight', 'canonical_smiles'] values from 'mdlmol' property")
-  public Stream<NodeWrapper> createPropertiesMol(@Name("labels") List<String> labelNames) throws InterruptedException {
+  public Stream<NodeWrapper> createPropertiesMol(@Name("labels") List<String> labelNames,
+                                                 @Name(value = "batchSize", defaultValue = PAGE_SIZE_STRING) long batchSize,
+                                                 @Name( value="number of processors", defaultValue = "0") long processors) throws InterruptedException {
     log.info("Update nodes with labels=%s, create additional fields", labelNames);
 
-    executeBatches(getLabeledNodes(labelNames), PAGE_SIZE, node -> {
+    int parallelism = processors == 0 ? Runtime.getRuntime().availableProcessors() : (int)processors;
+    executeBatches(getLabeledNodes(labelNames), (int) batchSize, parallelism, node -> {
       final String mol = (String) node.getProperty("mdlmol");
       try {
         final NodeParameters block = converter.convertMolBlock(mol);

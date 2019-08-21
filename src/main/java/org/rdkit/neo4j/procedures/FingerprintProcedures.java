@@ -42,7 +42,7 @@ public class FingerprintProcedures extends BaseProcedure {
     Stream<Node> nodes = getLabeledNodes(labelNames);
     Converter converter = Converter.createConverter(fingerprintType);
 
-    executeBatches(nodes, PAGE_SIZE, node -> {
+    executeBatches(nodes, PAGE_SIZE, Runtime.getRuntime().availableProcessors(), node -> {
       final String smiles = (String) node.getProperty(canonicalSmilesProperty);
       try {
         final LuceneQuery fp = converter.getLuceneFingerprint(smiles);
